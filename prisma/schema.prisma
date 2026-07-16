@@ -1,0 +1,233 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../lib/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum PeriodType {
+  ANNUAL
+  QUARTERLY
+}
+
+enum InsightType {
+  SWOT
+  FINANCIAL_SUMMARY
+  NEWS_DIGEST
+}
+
+// NSE/BSE company master list + cached financial data.
+// Live data is pre-fetched by ai-service background jobs and stored here.
+// Web API routes read from cache, never call Yahoo Finance live (except on first-visit cache-miss).
+model Company {
+  id                String              @id @default(cuid())
+  symbol            String              @unique
+  name              String
+  sector            String?
+  exchange          String              @default("NSE")
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+
+  quote             Quote?
+  priceHistory      PriceHistory[]
+  statements        FinancialStatement[]
+  ratios            FinancialRatio[]
+  peers             PeerRelation[]      @relation("CompanyPeers")
+  peerOf            PeerRelation[]      @relation("PeerOf")
+  newsItems         NewsItem[]
+  insights          AIInsight[]
+
+  @@index([sector])
+  @@index([name])
+}
+
+model Quote {
+  id                String   @id @default(cuid())
+  companyId         String   @unique
+  company           Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  price             Float
+  change            Float?
+  changePercent     Float?
+  dayHigh           Float?
+  dayLow            Float?
+  fiftyTwoWeekHigh  Float?
+  fiftyTwoWeekLow   Float?
+  volume            BigInt?
+  marketCap         BigInt?
+  currency          String?
+  totalBuyQuantity  Float?
+  totalSellQuantity Float?
+  upperCircuitLimit Float?
+  lowerCircuitLimit Float?
+  openInterest      Float?
+  bestBids          Json?
+  bestAsks          Json?
+  tickSource        String?
+  fetchedAt         DateTime @default(now())
+}
+
+// Angel One SmartAPI instrument token lookup, needed to subscribe to the
+// live WebSocket feed (which identifies instruments by numeric token, not
+// ticker symbol). Populated from Angel One's public scrip master file.
+model InstrumentToken {
+  id           String   @id @default(cuid())
+  symbol       String
+  exchange     String
+  token        String
+  exchangeType Int
+  updatedAt    DateTime @updatedAt
+
+  @@unique([symbol, exchange])
+}
+
+model PriceHistory {
+  id        String   @id @default(cuid())
+  companyId String
+  company   Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  date      DateTime
+  open      Float
+  high      Float
+  low       Float
+  close     Float
+  volume    BigInt?
+
+  @@unique([companyId, date])
+  @@index([companyId, date])
+}
+
+model FinancialStatement {
+  id                String      @id @default(cuid())
+  companyId         String
+  company           Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  periodType        PeriodType
+  periodEndDate     DateTime
+  revenue           Float?
+  netIncome         Float?
+  grossProfit       Float?
+  operatingIncome   Float?
+  totalAssets       Float?
+  totalLiabilities  Float?
+  stockholdersEquity Float?
+  // Extended P&L metrics (Yahoo Finance fundamentalsTimeSeries "financials" module)
+  costOfRevenue     Float?
+  operatingExpense  Float?
+  sellingGeneralAndAdministration Float?
+  ebitda            Float?
+  ebit              Float?
+  normalizedEbitda  Float?
+  normalizedIncome  Float?
+  interestIncome    Float?
+  interestExpense   Float?
+  netInterestIncome Float?
+  taxProvision      Float?
+  pretaxIncome      Float?
+  taxRateForCalcs   Float?
+  dilutedEps        Float?
+  basicEps          Float?
+  dilutedAverageShares Float?
+  basicAverageShares Float?
+  totalUnusualItems Float?
+  totalExpenses     Float?
+  netIncomeCommonStockholders Float?
+  // Extended balance sheet metrics (Yahoo Finance fundamentalsTimeSeries "balance-sheet" module)
+  currentAssets     Float?
+  cashAndCashEquivalents Float?
+  inventory         Float?
+  accountsReceivable Float?
+  netPPE            Float?
+  totalNonCurrentAssets Float?
+  currentLiabilities Float?
+  accountsPayable   Float?
+  longTermDebt      Float?
+  totalDebt         Float?
+  totalNonCurrentLiabilities Float?
+  retainedEarnings  Float?
+  commonStockEquity Float?
+  workingCapital    Float?
+  netDebt           Float?
+  tangibleBookValue Float?
+  investedCapital   Float?
+  totalCapitalization Float?
+  minorityInterest  Float?
+  // Cash flow metrics (Yahoo Finance fundamentalsTimeSeries "cash-flow" module)
+  operatingCashFlow Float?
+  investingCashFlow Float?
+  financingCashFlow Float?
+  freeCashFlow      Float?
+  capitalExpenditure Float?
+  endCashPosition   Float?
+  beginningCashPosition Float?
+  changesInCash     Float?
+  repurchaseOfCapitalStock Float?
+  issuanceOfCapitalStock Float?
+  cashDividendsPaid Float?
+  repaymentOfDebt   Float?
+  issuanceOfDebt    Float?
+  depreciationAndAmortization Float?
+  stockBasedCompensation Float?
+  changeInWorkingCapital Float?
+  interestPaidSupplementalData Float?
+  incomeTaxPaidSupplementalData Float?
+  updatedAt         DateTime    @updatedAt
+
+  @@unique([companyId, periodType, periodEndDate])
+  @@index([companyId, periodType])
+}
+
+model FinancialRatio {
+  id              String   @id @default(cuid())
+  companyId       String
+  company         Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  peRatio         Float?
+  priceToBook     Float?
+  debtToEquity    Float?
+  roe             Float?
+  roa             Float?
+  currentRatio    Float?
+  quickRatio      Float?
+  profitMargin    Float?
+  operatingMargin Float?
+  createdAt       DateTime @default(now())
+
+  @@index([companyId, createdAt])
+}
+
+model PeerRelation {
+  id            String   @id @default(cuid())
+  companyId     String
+  company       Company  @relation("CompanyPeers", fields: [companyId], references: [id], onDelete: Cascade)
+  peerCompanyId String
+  peerCompany   Company  @relation("PeerOf", fields: [peerCompanyId], references: [id], onDelete: Cascade)
+  createdAt     DateTime @default(now())
+
+  @@unique([companyId, peerCompanyId])
+}
+
+model NewsItem {
+  id          String   @id @default(cuid())
+  companyId   String
+  company     Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  externalId  String?
+  title       String
+  link        String
+  source      String?
+  summary     String?
+  publishedAt DateTime
+
+  @@unique([companyId, link])
+  @@index([companyId, publishedAt])
+}
+
+model AIInsight {
+  id        String      @id @default(cuid())
+  companyId String
+  company   Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  type      InsightType
+  content   Json
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  @@unique([companyId, type])
+}
