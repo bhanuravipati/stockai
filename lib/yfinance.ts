@@ -1048,27 +1048,36 @@ const PEER_METRICS_FAILURE_TTL_MS = 30 * 1000;
 // many requests land in that window.
 const peerMetricsCache = new Map<string, { promise: Promise<PeerFetchResult | null>; expiresAt: number }>();
 
-export async function fetchPeerMetrics(ticker: string): Promise<PeerFetchResult | null> {
-  const cached = peerMetricsCache.get(ticker);
+/**
+ * `needsGrowth` controls whether the (heaviest, most timeout-prone) QoQ
+ * growth call fires. Cached by `${ticker}:${needsGrowth}` rather than just
+ * `ticker` so a growth-skipping caller (the screener, for queries that don't
+ * reference growth metrics) can never poison the cache for a later
+ * growth-needing caller with incomplete data — the two variants simply don't
+ * share a cache entry.
+ */
+export async function fetchPeerMetrics(ticker: string, needsGrowth = true): Promise<PeerFetchResult | null> {
+  const cacheKey = `${ticker}:${needsGrowth}`;
+  const cached = peerMetricsCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) {
     return cached.promise;
   }
 
-  const promise = fetchPeerMetricsUncached(ticker);
+  const promise = fetchPeerMetricsUncached(ticker, needsGrowth);
   const entry = { promise, expiresAt: Date.now() + PEER_METRICS_CACHE_TTL_MS };
-  peerMetricsCache.set(ticker, entry);
+  peerMetricsCache.set(cacheKey, entry);
   // fetchPeerMetricsUncached never rejects (it catches internally), so this
   // just corrects the optimistic success TTL down to the shorter failure
   // TTL once we know the fetch actually came back empty.
   promise.then((data) => {
-    if (data == null && peerMetricsCache.get(ticker) === entry) {
+    if (data == null && peerMetricsCache.get(cacheKey) === entry) {
       entry.expiresAt = Date.now() + PEER_METRICS_FAILURE_TTL_MS;
     }
   });
   return promise;
 }
 
-async function fetchPeerMetricsUncached(ticker: string): Promise<PeerFetchResult | null> {
+async function fetchPeerMetricsUncached(ticker: string, needsGrowth = true): Promise<PeerFetchResult | null> {
   try {
     const [quote, summary, growth] = await Promise.all([
       withRetry(() => yahooFinance.quote(ticker, {}, withTimeout())),
@@ -1081,7 +1090,7 @@ async function fetchPeerMetricsUncached(ticker: string): Promise<PeerFetchResult
           )
           .catch(() => null)
       ),
-      getQuarterlyGrowth(ticker),
+      needsGrowth ? getQuarterlyGrowth(ticker) : Promise.resolve<QuarterlyGrowth>({ salesVarQoQ: null, profitVarQoQ: null }),
     ]);
 
     if (!quote || quote.regularMarketPrice == null) {
@@ -1150,17 +1159,30 @@ async function fetchPeerMetricsUncached(ticker: string): Promise<PeerFetchResult
   }
 }
 
-/** Runs `fn` over `items` with at most `limit` requests in flight at a time. */
+/**
+ * Runs `fn` over `items` with at most `limit` requests in flight at a time.
+ * A true sliding-window pool, not fixed-size batches — the next item starts
+ * the instant any slot frees up, rather than waiting for an entire batch
+ * (including its slowest/timed-out straggler) to finish before starting the
+ * next `limit`. That batching used to waste up to the full per-item timeout
+ * on every batch whenever one item was slow, multiplied by every batch.
+ */
 export async function mapWithConcurrency<T, R>(
   items: T[],
   limit: number,
   fn: (item: T) => Promise<R>
 ): Promise<R[]> {
-  const results: R[] = [];
-  for (let i = 0; i < items.length; i += limit) {
-    const batch = items.slice(i, i + limit);
-    results.push(...(await Promise.all(batch.map(fn))));
+  const results: R[] = new Array(items.length);
+  let next = 0;
+
+  async function worker() {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i]);
+    }
   }
+
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
   return results;
 }
 
@@ -1445,7 +1467,7 @@ function normalizeCompanyName(name: string): string {
  * numeric scrip-code ticker that shares no root with its NSE counterpart),
  * fetches full peer-style metrics, and sorts by market cap descending.
  */
-async function resolveScreenedMetrics(tickers: string[]): Promise<PeerMetrics[]> {
+async function resolveScreenedMetrics(tickers: string[], needsGrowth = true): Promise<PeerMetrics[]> {
   const rootSeen = new Set<string>();
   const byRootDeduped: string[] = [];
   for (const ticker of tickers) {
@@ -1455,8 +1477,8 @@ async function resolveScreenedMetrics(tickers: string[]): Promise<PeerMetrics[]>
     byRootDeduped.push(ticker);
   }
 
-  const candidateMetrics = await mapWithConcurrency(byRootDeduped, 5, (ticker) =>
-    fetchPeerMetrics(ticker).then((m) => (m ? { ticker, metrics: m } : null))
+  const candidateMetrics = await mapWithConcurrency(byRootDeduped, SCREEN_METRICS_CONCURRENCY, (ticker) =>
+    fetchPeerMetrics(ticker, needsGrowth).then((m) => (m ? { ticker, metrics: m } : null))
   );
 
   const nameSeen = new Set<string>();
@@ -1494,6 +1516,14 @@ export async function getCompaniesBySector(
 // assembled by paging at this size rather than requesting more per call.
 const SCREEN_PAGE_SIZE = 250;
 
+// Concurrency for resolving full per-company metrics across the screener's
+// whole candidate universe (~500-750 tickers). Higher than other
+// mapWithConcurrency call sites (peer/compare discovery, ~10-40 tickers)
+// specifically because this fan-out is large enough that concurrency is the
+// dominant driver of wall-clock time — a cold screen was taking ~2 minutes
+// at concurrency 5.
+const SCREEN_METRICS_CONCURRENCY = 20;
+
 /**
  * Candidate universe for the stock screener — the top `targetCompanies`
  * distinct Indian equities by market cap (optionally scoped to one Yahoo
@@ -1507,7 +1537,11 @@ const SCREEN_PAGE_SIZE = 250;
  * page comes back short, meaning Yahoo's list for this scope is exhausted).
  * `resolveScreenedMetrics` then does the authoritative dedup + metrics fetch.
  */
-export async function getScreenUniverse(yahooSector: string | undefined, targetCompanies = 500): Promise<PeerMetrics[]> {
+export async function getScreenUniverse(
+  yahooSector: string | undefined,
+  targetCompanies = 500,
+  needsGrowth = true
+): Promise<PeerMetrics[]> {
   const maxRawTickers = targetCompanies * 3;
   const rawTickers: string[] = [];
   const rootsSeen = new Set<string>();
@@ -1524,5 +1558,5 @@ export async function getScreenUniverse(yahooSector: string | undefined, targetC
     offset += SCREEN_PAGE_SIZE;
   }
 
-  return resolveScreenedMetrics(rawTickers);
+  return resolveScreenedMetrics(rawTickers, needsGrowth);
 }

@@ -35,7 +35,8 @@ export async function GET(request: NextRequest) {
 
   try {
     const { plan } = compiled;
-    const universe = await getScreenUniverse(plan.sector?.yahooSector, TARGET_UNIVERSE_COMPANIES);
+    const needsGrowth = plan.metricKeys.includes("salesVarQoQ") || plan.metricKeys.includes("profitVarQoQ");
+    const universe = await getScreenUniverse(plan.sector?.yahooSector, TARGET_UNIVERSE_COMPANIES, needsGrowth);
     const matches = universe
       .filter((c) => evaluateRow(plan.rowAst, c))
       .sort((a, b) => (b.marketCap ?? 0) - (a.marketCap ?? 0));
