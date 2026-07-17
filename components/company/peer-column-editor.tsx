@@ -17,9 +17,12 @@ import { DEFAULT_PEER_COLUMN_KEYS, PEER_COLUMNS, PEER_COLUMN_GROUPS } from "@/li
 export function PeerColumnEditor({
   selectedKeys,
   onChange,
+  resetKeys = DEFAULT_PEER_COLUMN_KEYS,
 }: {
   selectedKeys: string[];
   onChange: (keys: string[]) => void;
+  /** Keys "Reset to default" restores — defaults to the Peers tab's own default set. */
+  resetKeys?: string[];
 }) {
   const selectedSet = new Set(selectedKeys);
 
@@ -76,7 +79,7 @@ export function PeerColumnEditor({
         </Command>
 
         <DialogFooter className="items-center sm:justify-between!">
-          <Button variant="ghost" size="sm" onClick={() => onChange(DEFAULT_PEER_COLUMN_KEYS)}>
+          <Button variant="ghost" size="sm" onClick={() => onChange(resetKeys)}>
             Reset to default
           </Button>
         </DialogFooter>

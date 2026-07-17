@@ -1,10 +1,12 @@
 generator client {
-  provider = "prisma-client"
-  output   = "../lib/generated/prisma"
+  provider        = "prisma-client"
+  output          = "../lib/generated/prisma"
+  previewFeatures = ["postgresqlExtensions"]
 }
 
 datasource db {
-  provider = "postgresql"
+  provider   = "postgresql"
+  extensions = [pg_trgm]
 }
 
 enum PeriodType {
@@ -41,6 +43,14 @@ model Company {
 
   @@index([sector])
   @@index([name])
+  // The search endpoint (`/api/search`) matches with `contains` (substring,
+  // not prefix) across symbol/name/sector on every debounced keystroke — a
+  // plain B-tree index (the two above) can't accelerate that, only
+  // "starts with". These GIN trigram indexes are what actually make that
+  // query fast instead of a full table scan as the company list grows.
+  @@index([symbol(ops: raw("gin_trgm_ops"))], type: Gin, map: "Company_symbol_trgm_idx")
+  @@index([name(ops: raw("gin_trgm_ops"))], type: Gin, map: "Company_name_trgm_idx")
+  @@index([sector(ops: raw("gin_trgm_ops"))], type: Gin, map: "Company_sector_trgm_idx")
 }
 
 model Quote {

@@ -1,11 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { use, useEffect, useState } from "react";
+import useSWR from "swr";
 import { Skeleton } from "@/components/ui/skeleton";
 import { StatementSection } from "@/components/company/statement-section";
 import { PeerComparisonTable } from "@/components/company/peer-comparison-table";
 import { PeerDashboard } from "@/components/company/peer-dashboard";
 import { PeerColumnEditor } from "@/components/company/peer-column-editor";
+import { fetcher, extractErrorMessage } from "@/lib/swr-fetcher";
 import { DEFAULT_PEER_COLUMN_KEYS, resolvePeerColumns } from "@/lib/peer-columns";
 import type { PeerMetrics } from "@/lib/yfinance";
 
@@ -23,46 +25,26 @@ function loadStoredColumnKeys(): string[] {
   }
 }
 
+interface PeersResponse {
+  companies: PeerMetrics[];
+  industry?: string;
+}
+
 export default function PeersPage({
   params,
 }: {
   params: Promise<{ symbol: string }>;
 }) {
-  const [symbol, setSymbol] = useState<string>("");
-  const [companies, setCompanies] = useState<PeerMetrics[]>([]);
-  const [industry, setIndustry] = useState<string | undefined>();
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const { symbol } = use(params);
   const [columnKeys, setColumnKeys] = useState<string[]>(DEFAULT_PEER_COLUMN_KEYS);
 
   useEffect(() => {
     setColumnKeys(loadStoredColumnKeys());
   }, []);
 
-  useEffect(() => {
-    async function loadParams() {
-      const { symbol: sym } = await params;
-      setSymbol(sym);
-      fetchData(sym);
-    }
-    loadParams();
-  }, [params]);
-
-  async function fetchData(sym: string) {
-    try {
-      const res = await fetch(`/api/companies/${sym}/peers`);
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || "Failed to fetch peers");
-      }
-      setCompanies(data.companies || []);
-      setIndustry(data.industry);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unknown error");
-    } finally {
-      setLoading(false);
-    }
-  }
+  const { data, error, isLoading } = useSWR<PeersResponse>(`/api/companies/${symbol}/peers`, fetcher);
+  const companies = data?.companies ?? [];
+  const industry = data?.industry;
 
   function handleColumnChange(keys: string[]) {
     setColumnKeys(keys);
@@ -73,7 +55,7 @@ export default function PeersPage({
     }
   }
 
-  if (loading) {
+  if (isLoading) {
     return (
       <div className="space-y-4">
         <div className="rounded-lg border bg-card p-6">
@@ -93,7 +75,7 @@ export default function PeersPage({
       <div className="rounded-lg border bg-card p-6">
         <h2 className="mb-4 text-lg font-semibold">Peer Comparison</h2>
         <p className="text-muted-foreground">
-          {error || `No peer data available for ${symbol}`}
+          {error ? extractErrorMessage(error, "Failed to fetch peers") : `No peer data available for ${symbol}`}
         </p>
       </div>
     );

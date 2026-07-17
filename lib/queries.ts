@@ -1,6 +1,8 @@
 import { cache } from "react";
 import { notFound } from "next/navigation";
 import { prisma } from "@/lib/db";
+import { getQuote, getCompanyInfo, type StockQuote } from "@/lib/yfinance";
+import type { Company } from "@/lib/generated/prisma/client";
 
 export const getCompanyBySymbol = cache(async (symbol: string) => {
   const company = await prisma.company.findUnique({
@@ -9,6 +11,62 @@ export const getCompanyBySymbol = cache(async (symbol: string) => {
   });
   if (!company) notFound();
   return company;
+});
+
+export interface ResolvedCompany {
+  company: Company | null;
+  quote: StockQuote | null;
+  /** Best-available name for the page title when `company` is null. */
+  fallbackName: string | null;
+  error: string | null;
+}
+
+/**
+ * Resolves a company for the `/company/[symbol]` layout — DB lookup, and on
+ * a cache miss, a live Yahoo fetch + upsert so sub-tabs have a `Company` row
+ * to attach to. Wrapped in React's `cache()` so `generateMetadata` and the
+ * layout body (which both need this) share one result per request instead
+ * of each independently hitting Postgres and Yahoo — `cache()` is the
+ * documented fix for exactly this: it only dedupes `fetch()` calls
+ * automatically, not raw Prisma/SDK calls like the ones here.
+ */
+export const resolveCompanyForLayout = cache(async (symbol: string): Promise<ResolvedCompany> => {
+  try {
+    const existing = await prisma.company.findUnique({ where: { symbol } });
+
+    if (existing) {
+      const quote = await getQuote(existing.symbol, existing.exchange);
+      return { company: existing, quote, fallbackName: existing.name, error: null };
+    }
+
+    const [quote, info] = await Promise.all([getQuote(symbol), getCompanyInfo(symbol)]);
+
+    if (!quote) {
+      return { company: null, quote: null, fallbackName: info?.name ?? null, error: null };
+    }
+
+    const exchange = symbol.includes(".BO") ? "BSE" : "NSE";
+    const company = await prisma.company.upsert({
+      where: { symbol },
+      create: {
+        symbol,
+        name: info?.name || symbol,
+        exchange,
+        sector: info?.sector || null,
+      },
+      update: {},
+    });
+
+    return { company, quote, fallbackName: company.name, error: null };
+  } catch (error) {
+    console.error(`[resolveCompanyForLayout] Error resolving ${symbol}:`, error);
+    return {
+      company: null,
+      quote: null,
+      fallbackName: null,
+      error: error instanceof Error ? error.message : "An unexpected error occurred",
+    };
+  }
 });
 
 export function getAnnualStatements(companyId: string) {

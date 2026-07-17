@@ -7,6 +7,8 @@ export interface PeerRankingDatum {
   name: string;
   value: number | null;
   isCurrent?: boolean;
+  /** Explicit fill color, overriding the current/peer 2-tone scheme below (used by the Compare page's per-company palette). */
+  color?: string;
 }
 
 const CURRENT_COLOR = CHART_COLORS[3];
@@ -27,18 +29,22 @@ export function PeerRankingChart({
     return <p className="text-sm text-muted-foreground">No data available.</p>;
   }
 
+  const hasCurrent = chartData.some((d) => d.isCurrent);
+
   return (
     <div>
-      <div className="mb-2 flex items-center gap-4 text-xs text-muted-foreground">
-        <span className="flex items-center gap-1.5">
-          <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: CURRENT_COLOR }} aria-hidden />
-          {currentLabel}
-        </span>
-        <span className="flex items-center gap-1.5">
-          <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: PEER_COLOR }} aria-hidden />
-          Peers
-        </span>
-      </div>
+      {hasCurrent && (
+        <div className="mb-2 flex items-center gap-4 text-xs text-muted-foreground">
+          <span className="flex items-center gap-1.5">
+            <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: CURRENT_COLOR }} aria-hidden />
+            {currentLabel}
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: PEER_COLOR }} aria-hidden />
+            Peers
+          </span>
+        </div>
+      )}
       <ResponsiveContainer width="100%" height={260}>
         <BarChart data={chartData} margin={{ top: 8, right: 8, left: 0, bottom: 24 }}>
           <CartesianGrid vertical={false} stroke="var(--border)" strokeDasharray="3 3" />
@@ -71,7 +77,7 @@ export function PeerRankingChart({
           />
           <Bar dataKey="value" radius={[4, 4, 0, 0]} maxBarSize={40}>
             {chartData.map((d, i) => (
-              <Cell key={i} fill={d.isCurrent ? CURRENT_COLOR : PEER_COLOR} />
+              <Cell key={i} fill={d.color ?? (d.isCurrent ? CURRENT_COLOR : PEER_COLOR)} />
             ))}
           </Bar>
         </BarChart>

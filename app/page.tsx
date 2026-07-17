@@ -1,13 +1,7 @@
-import { prisma } from "@/lib/db";
 import { HeroSearch } from "@/components/search/hero-search";
-import { CompanyCard } from "@/components/company/company-card";
 import { Sparkles } from "lucide-react";
 
-export default async function HomePage() {
-  const companies = await prisma.company.findMany({
-    orderBy: { symbol: "asc" },
-  });
-
+export default function HomePage() {
   return (
     <div className="relative">
       <div

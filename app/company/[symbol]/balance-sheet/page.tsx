@@ -1,7 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { use } from "react";
+import useSWR from "swr";
 import { format } from "date-fns";
+import { fetcher, extractErrorMessage } from "@/lib/swr-fetcher";
 import { Skeleton } from "@/components/ui/skeleton";
 import { FinancialTable, type RowDef, type StatementRow } from "@/components/company/financial-table";
 import { StatementSection } from "@/components/company/statement-section";
@@ -34,6 +36,11 @@ interface BalanceSheet {
   minorityInterest?: number;
 }
 
+interface BalanceSheetResponse {
+  statements: BalanceSheet[];
+  refreshing?: boolean;
+}
+
 const ROWS: RowDef[] = [
   { key: "totalAssets", label: "Total Assets", emphasis: true },
   { key: "currentAssets", label: "Current Assets" },
@@ -64,39 +71,13 @@ export default function BalanceSheetPage({
 }: {
   params: Promise<{ symbol: string }>;
 }) {
-  const [symbol, setSymbol] = useState<string>("");
-  const [statements, setStatements] = useState<BalanceSheet[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [refreshing, setRefreshing] = useState(false);
+  const { symbol } = use(params);
+  const { data, error, isLoading } = useSWR<BalanceSheetResponse>(
+    `/api/companies/${symbol}/balance-sheet`,
+    fetcher
+  );
 
-  useEffect(() => {
-    async function loadParams() {
-      const { symbol: sym } = await params;
-      setSymbol(sym);
-      fetchData(sym);
-    }
-    loadParams();
-  }, [params]);
-
-  async function fetchData(sym: string) {
-    try {
-      const res = await fetch(`/api/companies/${sym}/balance-sheet`);
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || "Failed to fetch balance sheet");
-      }
-      const data = await res.json();
-      setStatements(data.statements || []);
-      setRefreshing(data.refreshing || false);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unknown error");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  if (loading) {
+  if (isLoading) {
     return (
       <div className="space-y-4">
         <div className="rounded-lg border bg-card p-6">
@@ -115,10 +96,15 @@ export default function BalanceSheetPage({
     return (
       <div className="rounded-lg border bg-card p-6">
         <h2 className="mb-4 text-lg font-semibold">Balance Sheet</h2>
-        <p className="text-muted-foreground text-red-500">{error}</p>
+        <p className="text-muted-foreground text-red-500">
+          {extractErrorMessage(error, "Failed to fetch balance sheet")}
+        </p>
       </div>
     );
   }
+
+  const statements = data?.statements ?? [];
+  const refreshing = data?.refreshing ?? false;
 
   if (statements.length === 0) {
     return (

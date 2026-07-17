@@ -85,6 +85,8 @@ export const PEER_COLUMNS: PeerColumnDef[] = [
   { key: "revenueGrowth", label: "Revenue Growth", group: "Growth", format: "percent", rawFraction: true },
   { key: "earningsGrowth", label: "Earnings Growth", group: "Growth", format: "percent", rawFraction: true },
   { key: "earningsQuarterlyGrowth", label: "Quarterly Earnings Growth", group: "Growth", format: "percent", rawFraction: true },
+  { key: "salesVarQoQ", label: "Sales Var (QoQ)", group: "Growth", format: "percent", rawFraction: true },
+  { key: "profitVarQoQ", label: "Profit Var (QoQ)", group: "Growth", format: "percent", rawFraction: true },
 
   // Dividends
   { key: "dividendYield", label: "Dividend Yield", group: "Dividends", format: "percent", rawFraction: true },
@@ -92,6 +94,40 @@ export const PEER_COLUMNS: PeerColumnDef[] = [
 ];
 
 export const DEFAULT_PEER_COLUMN_KEYS = PEER_COLUMNS.filter((c) => c.default).map((c) => c.key as string);
+
+/**
+ * Default columns for the standalone Compare page — independent from the
+ * Peers tab's `default` flag above, which only governs that tab's own
+ * out-of-the-box selection.
+ */
+export const COMPARE_DEFAULT_COLUMN_KEYS: string[] = [
+  "marketCap",
+  "peRatio",
+  "priceToBook",
+  "currentRatio",
+  "trailingEps",
+  "dividendYield",
+  "freeCashFlow",
+];
+
+/**
+ * Default columns for the Industry page — a separate list from the Peers
+ * tab's `default` flag and from `COMPARE_DEFAULT_COLUMN_KEYS`, same pattern.
+ */
+export const INDUSTRY_DEFAULT_COLUMN_KEYS: string[] = [
+  "marketCap",
+  "peRatio",
+  "priceToBook",
+  "freeCashFlow",
+  "salesVarQoQ",
+  "profitVarQoQ",
+];
+
+/**
+ * Base result columns for the screener — always shown alongside whichever
+ * metrics the user's query itself references (see `screen-results.tsx`).
+ */
+export const SCREENER_BASE_COLUMN_KEYS: string[] = ["marketCap", "peRatio", "roe"];
 
 export const PEER_COLUMN_GROUPS: PeerColumnGroup[] = [
   "Price & Size",

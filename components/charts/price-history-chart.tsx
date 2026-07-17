@@ -1,5 +1,6 @@
 "use client";
 
+import { memo, useMemo } from "react";
 import {
   Area,
   Bar,
@@ -60,7 +61,11 @@ function Candle(props: any) {
   );
 }
 
-export function PriceHistoryChart({
+// Wrapped in memo + a memoized data transform — the parent Overview tab
+// re-renders on every live SSE tick (elsewhere in the tree), and without
+// this, the candlestick transform would re-run and this whole chart would
+// re-mount/re-render on every tick even though its own props never changed.
+export const PriceHistoryChart = memo(function PriceHistoryChart({
   data,
   range,
   chartType,
@@ -69,8 +74,10 @@ export function PriceHistoryChart({
   range: PriceRange;
   chartType: "area" | "candle";
 }) {
-  const chartData =
-    chartType === "candle" ? data.map((d) => ({ ...d, range: [d.low, d.high] })) : data;
+  const chartData = useMemo(
+    () => (chartType === "candle" ? data.map((d) => ({ ...d, range: [d.low, d.high] })) : data),
+    [data, chartType]
+  );
 
   return (
     <ResponsiveContainer width="100%" height={320}>
@@ -124,4 +131,4 @@ export function PriceHistoryChart({
       </ComposedChart>
     </ResponsiveContainer>
   );
-}
+});

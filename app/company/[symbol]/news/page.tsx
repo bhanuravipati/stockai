@@ -1,7 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { use } from "react";
+import useSWR from "swr";
 import { format } from "date-fns";
+import { fetcher, extractErrorMessage } from "@/lib/swr-fetcher";
 import { Skeleton } from "@/components/ui/skeleton";
 
 interface NewsArticle {
@@ -12,44 +14,20 @@ interface NewsArticle {
   summary?: string;
 }
 
+interface NewsResponse {
+  articles: NewsArticle[];
+  refreshing?: boolean;
+}
+
 export default function NewsPage({
   params,
 }: {
   params: Promise<{ symbol: string }>;
 }) {
-  const [symbol, setSymbol] = useState<string>("");
-  const [articles, setArticles] = useState<NewsArticle[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [refreshing, setRefreshing] = useState(false);
+  const { symbol } = use(params);
+  const { data, error, isLoading } = useSWR<NewsResponse>(`/api/companies/${symbol}/news?limit=15`, fetcher);
 
-  useEffect(() => {
-    async function loadParams() {
-      const { symbol: sym } = await params;
-      setSymbol(sym);
-      fetchData(sym);
-    }
-    loadParams();
-  }, [params]);
-
-  async function fetchData(sym: string) {
-    try {
-      const res = await fetch(`/api/companies/${sym}/news?limit=15`);
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || "Failed to fetch news");
-      }
-      const data = await res.json();
-      setArticles(data.articles || []);
-      setRefreshing(data.refreshing || false);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unknown error");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  if (loading) {
+  if (isLoading) {
     return (
       <div className="space-y-4">
         <div className="rounded-lg border bg-card p-6">
@@ -72,10 +50,13 @@ export default function NewsPage({
     return (
       <div className="rounded-lg border bg-card p-6">
         <h2 className="mb-4 text-lg font-semibold">Latest News</h2>
-        <p className="text-muted-foreground text-red-500">{error}</p>
+        <p className="text-muted-foreground text-red-500">{extractErrorMessage(error, "Failed to fetch news")}</p>
       </div>
     );
   }
+
+  const articles = data?.articles ?? [];
+  const refreshing = data?.refreshing ?? false;
 
   if (articles.length === 0) {
     return (
@@ -95,9 +76,9 @@ export default function NewsPage({
       <div className="rounded-lg border bg-card p-6">
         <h2 className="mb-6 text-lg font-semibold">Latest News</h2>
         <div className="space-y-4">
-          {articles.map((article, idx) => (
+          {articles.map((article) => (
             <a
-              key={idx}
+              key={article.link}
               href={article.link}
               target="_blank"
               rel="noopener noreferrer"

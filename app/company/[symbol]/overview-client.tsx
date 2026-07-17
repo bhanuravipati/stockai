@@ -1,20 +1,28 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { formatINR, formatPercent, formatCompact } from "@/lib/format";
-import { gainLossText, gainLossBg } from "@/lib/colors";
+import { useState } from "react";
+import useSWR from "swr";
+import { fetcher, extractErrorMessage } from "@/lib/swr-fetcher";
+import { formatINR, formatPercent } from "@/lib/format";
+import { gainLossText } from "@/lib/colors";
 import { PriceHistoryChart } from "@/components/charts/price-history-chart";
-import { BarComparisonChart } from "@/components/charts/bar-comparison-chart";
 import { TimeframeSelector } from "@/components/charts/timeframe-selector";
 import { StatTile } from "@/components/company/stat-tile";
 import { ReturnCalculator } from "@/components/company/return-calculator";
 import { Skeleton } from "@/components/ui/skeleton";
-import { DemandSupplyGauge } from "@/components/company/demand-supply-gauge";
-import { CircuitBadge } from "@/components/company/circuit-badge";
-import { useLiveQuote } from "@/lib/hooks/use-live-quote";
+import { LivePriceDisplay } from "@/components/company/live-price-display";
 import type { PriceRange } from "@/lib/price-range";
 
-interface CompanyData {
+type PriceBar = {
+  date: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume?: number;
+};
+
+interface CompanyResponse {
   company: { symbol: string; name: string; sector?: string; exchange: string };
   quote: {
     symbol: string;
@@ -31,14 +39,10 @@ interface CompanyData {
     lowerCircuitLimit?: number | null;
     source?: "angelone" | "yahoo";
   };
-  history: Array<{
-    date: string;
-    open: number;
-    high: number;
-    low: number;
-    close: number;
-    volume?: number;
-  }>;
+  history: PriceBar[];
+}
+
+interface RatiosResponse {
   ratios?: {
     peRatio?: number;
     roe?: number;
@@ -54,115 +58,41 @@ interface PriceCagr {
   lifetime?: number;
 }
 
+interface HistoryResponse {
+  history: PriceBar[];
+}
+
 export function OverviewClient({ symbol }: { symbol: string }) {
-  const [data, setData] = useState<CompanyData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const { tick: liveTick, connected: isLive } = useLiveQuote(symbol);
-
-  const [cagr, setCagr] = useState<PriceCagr | null>(null);
-
   const [range, setRange] = useState<PriceRange>("1Y");
-  const [chartHistory, setChartHistory] = useState<CompanyData["history"]>([]);
-  const [chartLoading, setChartLoading] = useState(false);
   const [chartType, setChartType] = useState<"area" | "candle">("area");
-  // Per-range cache so flipping back to an already-fetched range (including
-  // the initial "1Y" load) doesn't re-hit the API.
-  const historyCache = useRef<Partial<Record<PriceRange, CompanyData["history"]>>>({});
 
-  useEffect(() => {
-    historyCache.current = {};
-
-    async function fetchData() {
-      try {
-        const [companyRes, ratiosRes] = await Promise.all([
-          fetch(`/api/companies/${symbol}`),
-          fetch(`/api/companies/${symbol}/ratios`),
-        ]);
-
-        if (!companyRes.ok) throw new Error("Failed to fetch company data");
-        const json = await companyRes.json();
-
-        historyCache.current["1Y"] = json.history || [];
-        setChartHistory(json.history || []);
-
-        if (ratiosRes.ok) {
-          const ratiosData = await ratiosRes.json();
-          setData({ ...json, ratios: ratiosData.ratios });
-        } else {
-          setData(json);
-        }
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Unknown error");
-      } finally {
-        setLoading(false);
-      }
-    }
-
+  // Reset to the default range whenever the symbol changes (e.g. client-side
+  // nav between two company pages without a full unmount, which does NOT
+  // reset local state on its own). Adjusting state directly during render
+  // when a prop changes — React's own recommended pattern for this exact
+  // case — instead of a useEffect, which would need an extra render pass.
+  const [prevSymbol, setPrevSymbol] = useState(symbol);
+  if (symbol !== prevSymbol) {
+    setPrevSymbol(symbol);
     setRange("1Y");
-    fetchData();
-  }, [symbol]);
+  }
 
-  useEffect(() => {
-    setCagr(null);
-    let cancelled = false;
+  const {
+    data: companyData,
+    error: companyError,
+    isLoading: companyLoading,
+  } = useSWR<CompanyResponse>(`/api/companies/${symbol}`, fetcher);
+  const { data: ratiosData } = useSWR<RatiosResponse>(`/api/companies/${symbol}/ratios`, fetcher);
+  const { data: cagrData } = useSWR<{ cagr?: PriceCagr }>(`/api/companies/${symbol}/cagr`, fetcher);
+  // "1Y" is already included in the combined company fetch above — only hit
+  // the dedicated history endpoint for other ranges. SWR caches each range
+  // by URL, so flipping back to an already-viewed range is instant.
+  const { data: rangeData, isLoading: rangeLoading } = useSWR<HistoryResponse>(
+    range !== "1Y" ? `/api/companies/${symbol}/history?range=${range}` : null,
+    fetcher
+  );
 
-    async function fetchCagr() {
-      try {
-        const res = await fetch(`/api/companies/${symbol}/cagr`);
-        if (!res.ok) return;
-        const json = await res.json();
-        if (!cancelled) setCagr(json.cagr || {});
-      } catch {
-        // CAGR tiles just stay hidden if this fails — non-critical.
-      }
-    }
-
-    fetchCagr();
-    return () => {
-      cancelled = true;
-    };
-  }, [symbol]);
-
-  useEffect(() => {
-    // The initial combined fetch above always populates "1Y" — no need to
-    // hit the dedicated endpoint for it, just restore it from cache.
-    if (range === "1Y") {
-      if (historyCache.current["1Y"]) setChartHistory(historyCache.current["1Y"]!);
-      return;
-    }
-
-    const cached = historyCache.current[range];
-    if (cached) {
-      setChartHistory(cached);
-      return;
-    }
-
-    let cancelled = false;
-    async function fetchRange() {
-      setChartLoading(true);
-      try {
-        const res = await fetch(`/api/companies/${symbol}/history?range=${range}`);
-        if (!res.ok) throw new Error("Failed to fetch history");
-        const json = await res.json();
-        if (!cancelled) {
-          historyCache.current[range] = json.history || [];
-          setChartHistory(json.history || []);
-        }
-      } catch {
-        // Keep showing the previous range's data rather than blanking the chart.
-      } finally {
-        if (!cancelled) setChartLoading(false);
-      }
-    }
-
-    fetchRange();
-    return () => {
-      cancelled = true;
-    };
-  }, [symbol, range]);
-
-  if (loading) {
+  if (companyLoading) {
     return (
       <div className="space-y-6">
         <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
@@ -174,24 +104,19 @@ export function OverviewClient({ symbol }: { symbol: string }) {
     );
   }
 
-  if (error || !data) {
-    return <div className="rounded-lg border border-destructive bg-destructive/10 p-4 text-destructive">{error || "Failed to load data"}</div>;
+  if (companyError || !companyData) {
+    return (
+      <div className="rounded-lg border border-destructive bg-destructive/10 p-4 text-destructive">
+        {companyError ? extractErrorMessage(companyError, "Failed to fetch company data") : "Failed to load data"}
+      </div>
+    );
   }
 
-  const { quote } = data;
-  // Live SSE ticks (when connected) override the static fetch — degrades
-  // to the original static `quote` fields whenever no live tick has
-  // arrived yet, so this is purely additive to the existing page.
-  const hasLiveTick = isLive && liveTick?.price != null;
-  const displayPrice = hasLiveTick ? liveTick!.price! : quote.price;
-  const displayChange = hasLiveTick && liveTick!.change != null ? liveTick!.change! : quote.change;
-  const displayChangePercent =
-    hasLiveTick && liveTick!.changePercent != null ? liveTick!.changePercent! : quote.changePercent;
-  const displayBuyQty = hasLiveTick ? liveTick!.totalBuyQuantity : quote.totalBuyQuantity;
-  const displaySellQty = hasLiveTick ? liveTick!.totalSellQuantity : quote.totalSellQuantity;
-  const displayUpperCircuit = hasLiveTick ? liveTick!.upperCircuitLimit : quote.upperCircuitLimit;
-  const displayLowerCircuit = hasLiveTick ? liveTick!.lowerCircuitLimit : quote.lowerCircuitLimit;
-  const isPositive = displayChange >= 0;
+  const { quote } = companyData;
+  const ratios = ratiosData?.ratios;
+  const cagr = cagrData?.cagr ?? null;
+  const chartHistory = range === "1Y" ? companyData.history ?? [] : rangeData?.history ?? [];
+  const chartLoading = range !== "1Y" && rangeLoading;
 
   const rangeFirst = chartHistory[0];
   const rangeLast = chartHistory[chartHistory.length - 1];
@@ -204,48 +129,13 @@ export function OverviewClient({ symbol }: { symbol: string }) {
 
   return (
     <div className="space-y-6">
-      {/* Price Display */}
-      <div className="rounded-lg border bg-card p-6">
-        <div className="flex items-baseline justify-between">
-          <div>
-            <div className="flex items-center gap-2">
-              <div className="text-sm text-muted-foreground">Current Price</div>
-              {hasLiveTick && (
-                <span className="flex items-center gap-1 text-xs font-medium text-gain">
-                  <span className="size-1.5 animate-pulse rounded-full bg-gain" />
-                  LIVE
-                </span>
-              )}
-              <CircuitBadge
-                price={displayPrice}
-                upperCircuitLimit={displayUpperCircuit}
-                lowerCircuitLimit={displayLowerCircuit}
-              />
-            </div>
-            <div className="text-4xl font-bold tabular-nums">{formatINR(displayPrice)}</div>
-          </div>
-          <div className={`text-right ${gainLossText(isPositive)}`}>
-            <div className="text-2xl font-bold tabular-nums">
-              {isPositive ? "+" : ""}{formatINR(displayChange)}
-            </div>
-            <div className="text-lg font-medium tabular-nums">
-              {isPositive ? "+" : ""}{formatPercent(displayChangePercent)}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Live demand/supply imbalance — only present when Angel One is streaming this symbol */}
-      <DemandSupplyGauge
-        totalBuyQuantity={displayBuyQty}
-        totalSellQuantity={displaySellQty}
-      />
+      <LivePriceDisplay symbol={symbol} quote={quote} />
 
       {/* Key Stats */}
       <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
         <StatTile
           label="P/E Ratio"
-          value={data.ratios?.peRatio ? data.ratios.peRatio.toFixed(2) : "—"}
+          value={ratios?.peRatio ? ratios.peRatio.toFixed(2) : "—"}
         />
         <StatTile label="52W High" value={formatINR(quote.fiftyTwoWeekHigh || 0)} />
         <StatTile label="52W Low" value={formatINR(quote.fiftyTwoWeekLow || 0)} />
@@ -332,15 +222,15 @@ export function OverviewClient({ symbol }: { symbol: string }) {
       )}
 
       {/* Additional Metrics */}
-      {data.ratios && (
+      {ratios && (
         <div className="grid grid-cols-2 gap-4 md:grid-cols-3">
           <StatTile
             label="ROE"
-            value={data.ratios.roe ? formatPercent(data.ratios.roe * 100) : "—"}
+            value={ratios.roe ? formatPercent(ratios.roe * 100) : "—"}
           />
           <StatTile
             label="ROA"
-            value={data.ratios.roa ? formatPercent(data.ratios.roa * 100) : "—"}
+            value={ratios.roa ? formatPercent(ratios.roa * 100) : "—"}
           />
         </div>
       )}

@@ -1,7 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { use } from "react";
+import useSWR from "swr";
 import { formatPercent, formatINR, formatCr, formatRelativeDate } from "@/lib/format";
+import { fetcher, extractErrorMessage } from "@/lib/swr-fetcher";
 import { Skeleton } from "@/components/ui/skeleton";
 
 interface Ratios {
@@ -49,42 +51,20 @@ const RECOMMENDATION_LABELS: Record<string, string> = {
   sell: "Sell",
 };
 
+interface RatiosResponse {
+  ratios: Ratios;
+}
+
 export default function RatiosPage({
   params,
 }: {
   params: Promise<{ symbol: string }>;
 }) {
-  const [symbol, setSymbol] = useState<string>("");
-  const [ratios, setRatios] = useState<Ratios | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const { symbol } = use(params);
+  const { data, error, isLoading } = useSWR<RatiosResponse>(`/api/companies/${symbol}/ratios`, fetcher);
+  const ratios = data?.ratios;
 
-  useEffect(() => {
-    async function loadParams() {
-      const { symbol: sym } = await params;
-      setSymbol(sym);
-      fetchData(sym);
-    }
-    loadParams();
-  }, [params]);
-
-  async function fetchData(sym: string) {
-    try {
-      const res = await fetch(`/api/companies/${sym}/ratios`);
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || "Failed to fetch ratios");
-      }
-      const data = await res.json();
-      setRatios(data.ratios || {});
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unknown error");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  if (loading) {
+  if (isLoading) {
     return (
       <div className="space-y-4">
         <div className="rounded-lg border bg-card p-6">
@@ -103,7 +83,7 @@ export default function RatiosPage({
     return (
       <div className="rounded-lg border bg-card p-6">
         <h2 className="mb-4 text-lg font-semibold">Financial Ratios</h2>
-        <p className="text-muted-foreground">{error}</p>
+        <p className="text-muted-foreground">{extractErrorMessage(error, "Failed to fetch ratios")}</p>
       </div>
     );
   }

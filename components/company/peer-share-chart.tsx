@@ -7,6 +7,8 @@ export interface PeerShareDatum {
   name: string;
   value: number;
   isCurrent?: boolean;
+  /** Explicit fill color, overriding the current/cycling scheme below (used by the Compare page's per-company palette). */
+  color?: string;
 }
 
 const CURRENT_COLOR = CHART_COLORS[3];
@@ -39,7 +41,7 @@ export function PeerShareChart({
           {data.map((d, i) => (
             <Cell
               key={d.name}
-              fill={d.isCurrent ? CURRENT_COLOR : CHART_COLORS[i % CHART_COLORS.length]}
+              fill={d.color ?? (d.isCurrent ? CURRENT_COLOR : CHART_COLORS[i % CHART_COLORS.length])}
             />
           ))}
         </Pie>

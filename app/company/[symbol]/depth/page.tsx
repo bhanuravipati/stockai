@@ -1,13 +1,19 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { use } from "react";
+import useSWR from "swr";
+import { fetcher, extractErrorMessage } from "@/lib/swr-fetcher";
 import { Skeleton } from "@/components/ui/skeleton";
 import { OrderBook, type OrderBookLevel } from "@/components/company/order-book";
 
-interface DepthData {
+interface DepthQuote {
   bestBids?: OrderBookLevel[] | null;
   bestAsks?: OrderBookLevel[] | null;
   source?: "angelone" | "yahoo";
+}
+
+interface CompanyResponse {
+  quote: DepthQuote;
 }
 
 export default function DepthPage({
@@ -15,32 +21,13 @@ export default function DepthPage({
 }: {
   params: Promise<{ symbol: string }>;
 }) {
-  const [data, setData] = useState<DepthData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const { symbol } = use(params);
+  // Same endpoint the Overview tab uses — SWR dedupes/caches by URL, so
+  // switching Overview -> Depth for a symbol you've already viewed serves
+  // this instantly from cache instead of a second live fetch.
+  const { data, error, isLoading } = useSWR<CompanyResponse>(`/api/companies/${symbol}`, fetcher);
 
-  useEffect(() => {
-    async function loadParams() {
-      const { symbol } = await params;
-      fetchData(symbol);
-    }
-    loadParams();
-  }, [params]);
-
-  async function fetchData(symbol: string) {
-    try {
-      const res = await fetch(`/api/companies/${symbol}`);
-      if (!res.ok) throw new Error("Failed to fetch market depth");
-      const json = await res.json();
-      setData(json.quote);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unknown error");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  if (loading) {
+  if (isLoading) {
     return (
       <div className="rounded-lg border bg-card p-6">
         <Skeleton className="mb-4 h-6 w-40" />
@@ -56,10 +43,12 @@ export default function DepthPage({
     return (
       <div className="rounded-lg border bg-card p-6">
         <h2 className="mb-4 text-lg font-semibold">Market Depth</h2>
-        <p className="text-muted-foreground text-red-500">{error}</p>
+        <p className="text-muted-foreground text-red-500">
+          {extractErrorMessage(error, "Failed to fetch market depth")}
+        </p>
       </div>
     );
   }
 
-  return <OrderBook bids={data?.bestBids} asks={data?.bestAsks} />;
+  return <OrderBook bids={data?.quote?.bestBids} asks={data?.quote?.bestAsks} />;
 }
