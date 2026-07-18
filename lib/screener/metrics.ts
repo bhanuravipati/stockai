@@ -13,7 +13,7 @@ export function normalizeMetricName(s: string): string {
 }
 
 /** Short codes that don't derive cleanly from a label or camelCase key. */
-const ALIASES: Record<string, PeerColumnDef["key"]> = {
+export const ALIASES: Record<string, PeerColumnDef["key"]> = {
   pe: "peRatio",
   pb: "priceToBook",
   ps: "priceToSales",

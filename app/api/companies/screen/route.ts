@@ -1,13 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
+import { after } from "next/server";
 import { compileScreen, evaluateRow } from "@/lib/screener";
 import { getScreenUniverse } from "@/lib/yfinance";
+import { isSnapshotStale, readScreenUniverse, refreshUniverse } from "@/lib/screener-universe";
 
-// A cold run screens ~500 companies (~1000 Yahoo calls at concurrency 5) and
-// can take a few minutes — ask Vercel for more time than the 10-60s default.
-// Note: Hobby-tier plans cap function duration at 60s regardless of this
-// value, so a cold wide screen may still time out there; Pro plans respect
-// it up to their own ceiling.
-export const maxDuration = 300;
+// Normally a fast DB read of the ScreenerMetric snapshot. The 60s headroom is
+// for the empty-snapshot fallback only, which live-fetches the universe from
+// Yahoo (first boot / truncated table) — that path can exceed it on Vercel
+// Hobby, but recovers permanently once the background refresh lands.
+export const maxDuration = 60;
 
 const MAX_QUERY_LENGTH = 500;
 const TARGET_UNIVERSE_COMPANIES = 500;
@@ -36,7 +37,22 @@ export async function GET(request: NextRequest) {
   try {
     const { plan } = compiled;
     const needsGrowth = plan.metricKeys.includes("salesVarQoQ") || plan.metricKeys.includes("profitVarQoQ");
-    const universe = await getScreenUniverse(plan.sector?.yahooSector, TARGET_UNIVERSE_COMPANIES, needsGrowth);
+
+    // Snapshot-first: the normal path is a pure Postgres read. Never block on
+    // freshness — a stale snapshot is served as-is and refreshed after the
+    // response; an empty one (first boot) falls back to the legacy live
+    // Yahoo path once while the background refresh populates the table.
+    const snapshot = await readScreenUniverse(plan.sector?.yahooSector, TARGET_UNIVERSE_COMPANIES);
+    let universe = snapshot.companies;
+    const dataAsOf = snapshot.dataAsOf;
+
+    if (universe.length === 0) {
+      after(() => refreshUniverse("full", { includeGrowth: true }).catch((e) => console.error("[screen] background refresh failed:", e)));
+      universe = await getScreenUniverse(plan.sector?.yahooSector, TARGET_UNIVERSE_COMPANIES, needsGrowth);
+    } else if (isSnapshotStale(dataAsOf)) {
+      after(() => refreshUniverse("full").catch((e) => console.error("[screen] background refresh failed:", e)));
+    }
+
     const matches = universe
       .filter((c) => evaluateRow(plan.rowAst, c))
       .sort((a, b) => (b.marketCap ?? 0) - (a.marketCap ?? 0));
@@ -59,6 +75,7 @@ export async function GET(request: NextRequest) {
       totalPages,
       universeSize: universe.length,
       universeDescription,
+      dataAsOf: dataAsOf?.toISOString() ?? null,
     });
   } catch (error) {
     console.error(`[/api/companies/screen] Error for query="${query}":`, error);

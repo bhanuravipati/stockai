@@ -5,6 +5,9 @@
 
 import YahooFinance from "yahoo-finance2";
 import { PRICE_RANGES, type PriceRange } from "./price-range";
+import { PEER_COLUMNS } from "./peer-columns";
+import { prisma } from "./db";
+import type { ScreenerMetric } from "./generated/prisma/client";
 
 export { PRICE_RANGES, type PriceRange };
 
@@ -940,7 +943,7 @@ export interface PeerComparison {
   companies: PeerMetrics[];
 }
 
-type PeerFetchResult = PeerMetrics & { industry?: string; sector?: string };
+export type PeerFetchResult = PeerMetrics & { industry?: string; sector?: string };
 
 // Yahoo's `financialData` module (and a few `defaultKeyStatistics` fields like
 // netIncomeToCommon) report absolute financial-statement figures — revenue,
@@ -983,7 +986,7 @@ async function fetchFxRateToInrSafe(currency: string): Promise<number | null> {
   }
 }
 
-interface QuarterlyGrowth {
+export interface QuarterlyGrowth {
   salesVarQoQ: number | null;
   profitVarQoQ: number | null;
 }
@@ -999,7 +1002,7 @@ interface QuarterlyGrowth {
  * history (<2 quarters) just yields nulls, same tolerance as the rest of
  * `fetchPeerMetrics`.
  */
-async function getQuarterlyGrowth(ticker: string): Promise<QuarterlyGrowth> {
+export async function getQuarterlyGrowth(ticker: string): Promise<QuarterlyGrowth> {
   try {
     const period1 = new Date();
     period1.setMonth(period1.getMonth() - 9);
@@ -1063,7 +1066,7 @@ export async function fetchPeerMetrics(ticker: string, needsGrowth = true): Prom
     return cached.promise;
   }
 
-  const promise = fetchPeerMetricsUncached(ticker, needsGrowth);
+  const promise = fetchPeerMetricsSnapshotFirst(ticker, needsGrowth);
   const entry = { promise, expiresAt: Date.now() + PEER_METRICS_CACHE_TTL_MS };
   peerMetricsCache.set(cacheKey, entry);
   // fetchPeerMetricsUncached never rejects (it catches internally), so this
@@ -1077,22 +1080,115 @@ export async function fetchPeerMetrics(ticker: string, needsGrowth = true): Prom
   return promise;
 }
 
+// The Postgres screener snapshot (see lib/screener-universe.ts) doubles as a
+// shared L2 for peer metrics: any company in the refreshed top-500 universe
+// can be served without a single Yahoo call. TTLs are generous because the
+// snapshot is fundamentals + daily quotes, not intraday data.
+export const SNAPSHOT_TTL_MS = Number(process.env.SCREENER_SNAPSHOT_TTL_HOURS ?? "12") * 60 * 60 * 1000;
+export const SNAPSHOT_GROWTH_TTL_MS = 48 * 60 * 60 * 1000;
+
+/** Maps a snapshot row back to the shape `fetchPeerMetrics` returns. Null columns become absent keys. */
+export function snapshotRowToPeerMetrics(row: ScreenerMetric): PeerFetchResult {
+  const metrics: PeerFetchResult = {
+    symbol: row.symbol,
+    name: row.name,
+    sector: row.sector ?? undefined,
+    industry: row.industry ?? undefined,
+  };
+  for (const { key } of PEER_COLUMNS) {
+    const value = row[key as keyof ScreenerMetric];
+    if (typeof value === "number") (metrics as unknown as Record<string, number>)[key] = value;
+  }
+  return metrics;
+}
+
+async function readSnapshotPeerMetrics(ticker: string, needsGrowth: boolean): Promise<PeerFetchResult | null> {
+  try {
+    const root = ticker.toUpperCase().replace(/\.(NS|BO)$/i, "");
+    const row = await prisma.screenerMetric.findUnique({ where: { symbol: root } });
+    if (!row) return null;
+    if (Date.now() - row.fundamentalsUpdatedAt.getTime() > SNAPSHOT_TTL_MS) return null;
+    if (needsGrowth && (row.growthUpdatedAt == null || Date.now() - row.growthUpdatedAt.getTime() > SNAPSHOT_GROWTH_TTL_MS)) {
+      return null;
+    }
+    return snapshotRowToPeerMetrics(row);
+  } catch {
+    // DB hiccup — degrade to the live path rather than failing the caller.
+    return null;
+  }
+}
+
+async function fetchPeerMetricsSnapshotFirst(ticker: string, needsGrowth: boolean): Promise<PeerFetchResult | null> {
+  const fromSnapshot = await readSnapshotPeerMetrics(ticker, needsGrowth);
+  if (fromSnapshot) return fromSnapshot;
+  return fetchPeerMetricsUncached(ticker, needsGrowth);
+}
+
+export async function fetchPeerQuote(ticker: string) {
+  return withRetry(() => yahooFinance.quote(ticker, {}, withTimeout()));
+}
+type YahooQuoteResult = Awaited<ReturnType<typeof fetchPeerQuote>>;
+
+export async function fetchPeerQuoteSummary(ticker: string) {
+  return withRetry(() =>
+    yahooFinance
+      .quoteSummary(
+        ticker,
+        { modules: ["summaryProfile", "financialData", "defaultKeyStatistics", "summaryDetail"] },
+        withTimeout()
+      )
+      .catch(() => null)
+  );
+}
+type YahooQuoteSummaryResult = Awaited<ReturnType<typeof fetchPeerQuoteSummary>>;
+
+// Yahoo's v7 quote endpoint accepts many symbols per request — one batch call
+// replaces up to `QUOTE_BATCH_SIZE` individual quote fetches. Used by the
+// snapshot refresher, where per-symbol quote calls would dominate the run.
+const QUOTE_BATCH_SIZE = 100;
+
+/** Batch-fetches quotes, keyed by uppercased Yahoo symbol. Failed batches are logged and skipped. */
+export async function fetchQuotesBatch(tickers: string[]): Promise<Map<string, YahooQuoteResult>> {
+  const quotesBySymbol = new Map<string, YahooQuoteResult>();
+  for (let i = 0; i < tickers.length; i += QUOTE_BATCH_SIZE) {
+    const chunk = tickers.slice(i, i + QUOTE_BATCH_SIZE);
+    try {
+      const quotes = await withRetry(() => yahooFinance.quote(chunk, {}, withTimeout()));
+      for (const quote of quotes) {
+        if (quote?.symbol) quotesBySymbol.set(quote.symbol.toUpperCase(), quote);
+      }
+    } catch (error) {
+      console.error(`[fetchQuotesBatch] batch of ${chunk.length} starting at ${chunk[0]} failed:`, error);
+    }
+  }
+  return quotesBySymbol;
+}
+
 async function fetchPeerMetricsUncached(ticker: string, needsGrowth = true): Promise<PeerFetchResult | null> {
   try {
     const [quote, summary, growth] = await Promise.all([
-      withRetry(() => yahooFinance.quote(ticker, {}, withTimeout())),
-      withRetry(() =>
-        yahooFinance
-          .quoteSummary(
-            ticker,
-            { modules: ["summaryProfile", "financialData", "defaultKeyStatistics", "summaryDetail"] },
-            withTimeout()
-          )
-          .catch(() => null)
-      ),
+      fetchPeerQuote(ticker),
+      fetchPeerQuoteSummary(ticker),
       needsGrowth ? getQuarterlyGrowth(ticker) : Promise.resolve<QuarterlyGrowth>({ salesVarQoQ: null, profitVarQoQ: null }),
     ]);
+    return assemblePeerMetrics(ticker, quote, summary, growth);
+  } catch {
+    return null;
+  }
+}
 
+/**
+ * Turns one company's already-fetched Yahoo payloads into `PeerMetrics`.
+ * Split from `fetchPeerMetricsUncached` so the snapshot refresher can inject
+ * batch-fetched quotes instead of paying one quote call per company.
+ */
+export async function assemblePeerMetrics(
+  ticker: string,
+  quote: YahooQuoteResult | undefined,
+  summary: YahooQuoteSummaryResult,
+  growth: QuarterlyGrowth
+): Promise<PeerFetchResult | null> {
+  try {
     if (!quote || quote.regularMarketPrice == null) {
       return null;
     }
@@ -1436,7 +1532,7 @@ export interface SectorScreenResult {
   hasMore: boolean;
 }
 
-function normalizeCompanyName(name: string): string {
+export function normalizeCompanyName(name: string): string {
   return name
     .toLowerCase()
     .replace(/\b(ltd|limited|inc|incorporated|corp|corporation|plc|co)\b\.?/g, "")
@@ -1537,26 +1633,55 @@ const SCREEN_METRICS_CONCURRENCY = 20;
  * page comes back short, meaning Yahoo's list for this scope is exhausted).
  * `resolveScreenedMetrics` then does the authoritative dedup + metrics fetch.
  */
+/**
+ * Ticker discovery for the screener universe, exposed separately so the
+ * snapshot refresher (lib/screener-universe.ts) can reuse it without the
+ * per-company metrics fan-out. The first ~2N/PAGE_SIZE pages are fetched in
+ * parallel (dual NSE/BSE listings mean N distinct companies need ~2N raw
+ * tickers, so those pages are needed in practically every run — serializing
+ * them only added latency); further pages, rarely needed, page sequentially
+ * up to the 3N raw-ticker safety bound.
+ */
+export async function discoverScreenTickers(yahooSector: string | undefined, targetCompanies = 500): Promise<string[]> {
+  const maxRawTickers = targetCompanies * 3;
+  const parallelPages = Math.ceil((targetCompanies * 2) / SCREEN_PAGE_SIZE);
+  const rawTickers: string[] = [];
+  const rootsSeen = new Set<string>();
+  let exhausted = false;
+
+  const addPage = (page: string[]) => {
+    for (const ticker of page) {
+      rawTickers.push(ticker);
+      rootsSeen.add(ticker.toUpperCase().replace(/\.(NS|BO)$/i, ""));
+    }
+    if (page.length < SCREEN_PAGE_SIZE) exhausted = true;
+  };
+
+  // Concurrent pages share one crumb handshake — getYahooCrumb coalesces
+  // in-flight requests.
+  const firstPages = await Promise.all(
+    Array.from({ length: parallelPages }, (_, i) =>
+      screenEquities({ sector: yahooSector, size: SCREEN_PAGE_SIZE, offset: i * SCREEN_PAGE_SIZE })
+    )
+  );
+  firstPages.forEach(addPage);
+
+  let offset = parallelPages * SCREEN_PAGE_SIZE;
+  while (!exhausted && rootsSeen.size < targetCompanies && rawTickers.length < maxRawTickers) {
+    const page = await screenEquities({ sector: yahooSector, size: SCREEN_PAGE_SIZE, offset });
+    if (page.length === 0) break;
+    addPage(page);
+    offset += SCREEN_PAGE_SIZE;
+  }
+
+  return rawTickers;
+}
+
 export async function getScreenUniverse(
   yahooSector: string | undefined,
   targetCompanies = 500,
   needsGrowth = true
 ): Promise<PeerMetrics[]> {
-  const maxRawTickers = targetCompanies * 3;
-  const rawTickers: string[] = [];
-  const rootsSeen = new Set<string>();
-  let offset = 0;
-
-  while (rootsSeen.size < targetCompanies && rawTickers.length < maxRawTickers) {
-    const page = await screenEquities({ sector: yahooSector, size: SCREEN_PAGE_SIZE, offset });
-    if (page.length === 0) break;
-    for (const ticker of page) {
-      rawTickers.push(ticker);
-      rootsSeen.add(ticker.toUpperCase().replace(/\.(NS|BO)$/i, ""));
-    }
-    if (page.length < SCREEN_PAGE_SIZE) break;
-    offset += SCREEN_PAGE_SIZE;
-  }
-
+  const rawTickers = await discoverScreenTickers(yahooSector, targetCompanies);
   return resolveScreenedMetrics(rawTickers, needsGrowth);
 }

@@ -241,3 +241,84 @@ model AIInsight {
 
   @@unique([companyId, type])
 }
+
+// Denormalized screener universe snapshot — one wide row per distinct Indian
+// company (global top ~500 by market cap), refreshed in the background by
+// POST /api/admin/refresh-universe (cron-triggered from ai-service). The
+// screen route reads only this table; metric column names deliberately
+// mirror PeerMetrics keys (lib/yfinance.ts) 1:1 so rows feed straight into
+// the query evaluator with no translation. Deliberately no FK to Company —
+// universe membership comes from Yahoo's market-cap screen, not the seeded
+// master list. Three explicit freshness timestamps (instead of one
+// @updatedAt, which would bump on every partial update) because quotes,
+// fundamentals, and QoQ growth refresh on different cadences.
+model ScreenerMetric {
+  symbol      String  @id // root symbol, e.g. "RELIANCE" (no .NS/.BO suffix)
+  yahooTicker String // resolved ticker used for fetches, e.g. "RELIANCE.NS"
+  name        String
+  sector      String? // Yahoo sector string (summaryProfile.sector)
+  industry    String? // lets peer discovery be served from the snapshot too
+
+  // Price & size
+  price            Float?
+  changePercent    Float?
+  marketCap        Float? // Float, not BigInt — screening precision is fine, avoids BigInt JSON pain
+  fiftyTwoWeekHigh Float?
+  fiftyTwoWeekLow  Float?
+
+  // Valuation
+  peRatio         Float?
+  forwardPE       Float?
+  priceToBook     Float?
+  pegRatio        Float?
+  priceToSales    Float?
+  enterpriseValue Float?
+  evToEbitda      Float?
+  evToRevenue     Float?
+  beta            Float?
+
+  // Profitability
+  roe             Float?
+  roa             Float?
+  netMargin       Float?
+  grossMargin     Float?
+  operatingMargin Float?
+  ebitdaMargin    Float?
+
+  // P&L
+  revenue     Float?
+  grossProfit Float?
+  ebitda      Float?
+  netIncome   Float?
+  trailingEps Float?
+  forwardEps  Float?
+
+  // Leverage & liquidity
+  totalCash    Float?
+  totalDebt    Float?
+  debtToEquity Float?
+  currentRatio Float?
+  quickRatio   Float?
+
+  // Cash flow
+  operatingCashFlow Float?
+  freeCashFlow      Float?
+
+  // Growth
+  revenueGrowth           Float?
+  earningsGrowth          Float?
+  earningsQuarterlyGrowth Float?
+  salesVarQoQ             Float?
+  profitVarQoQ            Float?
+
+  // Dividends
+  dividendYield Float?
+  payoutRatio   Float?
+
+  fundamentalsUpdatedAt DateTime // full-refresh (quoteSummary) freshness
+  quotesUpdatedAt       DateTime? // batch-quote freshness
+  growthUpdatedAt       DateTime? // QoQ (fundamentalsTimeSeries) freshness
+
+  @@index([marketCap(sort: Desc)])
+  @@index([sector, marketCap(sort: Desc)])
+}

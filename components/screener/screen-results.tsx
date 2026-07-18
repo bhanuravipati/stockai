@@ -2,7 +2,7 @@
 
 import { useMemo } from "react";
 import useSWR from "swr";
-import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
+import { ChevronLeftIcon, ChevronRightIcon, SparklesIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { StatementSection } from "@/components/company/statement-section";
@@ -34,6 +34,7 @@ export function ScreenResults({
   columnKeys,
   onColumnChange,
   defaultColumnKeys,
+  aiAssist,
 }: {
   query: string | null;
   page: number;
@@ -41,6 +42,8 @@ export function ScreenResults({
   columnKeys: string[];
   onColumnChange: (keys: string[]) => void;
   defaultColumnKeys: string[];
+  /** Set when the current query came from the AI agent — offers "loosen the filters" on a 0-match result. */
+  aiAssist?: (() => void) | null;
 }) {
   const { data, error, isLoading } = useSWR<ScreenResponse>(
     query ? `/api/companies/screen?q=${encodeURIComponent(query)}&page=${page}` : null,
@@ -93,8 +96,14 @@ export function ScreenResults({
 
   if (companies.length === 0) {
     return (
-      <div className="rounded-lg border bg-card p-6 text-sm text-muted-foreground">
-        No companies matched — screened the {data?.universeDescription}.
+      <div className="space-y-3 rounded-lg border bg-card p-6 text-sm text-muted-foreground">
+        <p>No companies matched — screened the {data?.universeDescription}.</p>
+        {aiAssist && (
+          <Button size="sm" variant="outline" onClick={aiAssist}>
+            <SparklesIcon />
+            Ask AI to loosen the filters
+          </Button>
+        )}
       </div>
     );
   }

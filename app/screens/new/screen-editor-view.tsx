@@ -2,13 +2,15 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { PlayIcon, SaveIcon, LinkIcon } from "lucide-react";
+import { PlayIcon, SaveIcon, LinkIcon, ChevronDownIcon, SparklesIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { QueryEditor } from "@/components/screener/query-editor";
 import { ContextualHint } from "@/components/screener/contextual-hint";
 import { ReferenceChips } from "@/components/screener/reference-chips";
 import { ScreenResults } from "@/components/screener/screen-results";
+import { AiChatPanel } from "@/components/screener/ai/ai-chat-panel";
+import { useScreenerAgent } from "@/lib/hooks/use-screener-agent";
 import {
   tokenize,
   compileScreen,
@@ -46,6 +48,9 @@ export function ScreenEditorView() {
     colsParam ? parseColumnsParam(colsParam) : null
   );
   const [error, setError] = useState<ScreenError | null>(null);
+  const [showAiPanel, setShowAiPanel] = useState(false);
+  const [lastAiQuery, setLastAiQuery] = useState<string | null>(null);
+  const agent = useScreenerAgent();
 
   // Prefill from a saved screen (Run/Edit links from /screens) — only once, on mount.
   useEffect(() => {
@@ -93,16 +98,32 @@ export function ScreenEditorView() {
     router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
   }
 
-  function handleRun() {
-    const result = compileScreen(draft);
+  function runQuery(query: string) {
+    const result = compileScreen(query);
     if (!result.ok) {
       setError(result.error);
       return;
     }
     setError(null);
     setCustomColumnKeys(null);
-    updateUrl({ q: draft, page: null });
+    updateUrl({ q: query, page: null });
     if (screenId) touchLastRun(screenId);
+  }
+
+  function handleRun() {
+    runQuery(draft);
+  }
+
+  function handleAiRun(query: string) {
+    setDraft(query);
+    setLastAiQuery(query);
+    runQuery(query);
+  }
+
+  /** "0 matches, ask AI to loosen it" — a resume on the same parked proposal, not a new message. */
+  function handleAiLoosen() {
+    setShowAiPanel(true);
+    agent.sendText("That query matched 0 companies — please loosen the thresholds and propose again.");
   }
 
   function handlePageChange(nextPage: number) {
@@ -233,7 +254,25 @@ export function ScreenEditorView() {
             Copy link
           </Button>
         )}
+        <Button size="sm" variant="outline" onClick={() => setShowAiPanel((v) => !v)} aria-expanded={showAiPanel}>
+          <SparklesIcon />
+          Ask AI
+          <ChevronDownIcon className={showAiPanel ? "rotate-180 transition-transform" : "transition-transform"} />
+        </Button>
       </div>
+
+      {showAiPanel && (
+        <AiChatPanel
+          items={agent.items}
+          status={agent.status}
+          busy={agent.busy}
+          sendText={agent.sendText}
+          pickOption={agent.pickOption}
+          retry={agent.retry}
+          reset={agent.reset}
+          onRun={handleAiRun}
+        />
+      )}
 
       <div className="rounded-lg border bg-card p-4">
         <ReferenceChips onInsert={insertAtCursor} />
@@ -246,6 +285,7 @@ export function ScreenEditorView() {
         columnKeys={columnKeys}
         onColumnChange={handleColumnChange}
         defaultColumnKeys={defaultColumnKeys}
+        aiAssist={qParam !== null && qParam === lastAiQuery && !agent.busy ? handleAiLoosen : null}
       />
     </div>
   );
