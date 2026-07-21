@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { ChevronDownIcon, GitCompareArrows, LayoutGrid, LineChart, ScanSearch, type LucideIcon } from "lucide-react";
+import { ChevronDownIcon, GitCompareArrows, GraduationCap, LayoutGrid, LineChart, ScanSearch, type LucideIcon } from "lucide-react";
 import { HeaderSearch } from "@/components/search/header-search";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Badge } from "@/components/ui/badge";
@@ -44,6 +44,14 @@ const TOOLS: ToolEntry[] = [
     title: "Screens",
     description: "Filter the market by your own conditions",
     accent: "bg-chart-2/10 text-chart-2",
+    badge: "New",
+  },
+  {
+    href: "/learn",
+    icon: GraduationCap,
+    title: "Learn",
+    description: "Free interactive lessons on stocks, bonds & commodities",
+    accent: "bg-chart-3/10 text-chart-3",
     badge: "New",
   },
 ];
