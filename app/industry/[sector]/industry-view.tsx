@@ -10,9 +10,17 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { StatementSection } from "@/components/company/statement-section";
 import { PeerComparisonTable } from "@/components/company/peer-comparison-table";
 import { PeerColumnEditor } from "@/components/company/peer-column-editor";
+import { AddWidgetDialog } from "@/components/company/add-widget-dialog";
 import { CompanyColorLegend } from "@/components/compare/company-color-legend";
-import { CompareDashboard } from "@/components/compare/compare-dashboard";
+import { ComparisonDashboard } from "@/components/company/comparison-dashboard";
 import { INDUSTRY_DEFAULT_COLUMN_KEYS, resolvePeerColumns } from "@/lib/peer-columns";
+import {
+  buildDefaultWidgets,
+  encodeWidgetsParam,
+  parseWidgetsParam,
+  type ChartTypeOverrides,
+  type DashboardWidget,
+} from "@/lib/dashboard-widgets";
 import { CHART_COLORS } from "@/lib/colors";
 import { fetcher, extractErrorMessage } from "@/lib/swr-fetcher";
 import type { IndustrySector } from "@/lib/industry-sectors";
@@ -32,10 +40,18 @@ function sameKeySet(a: string[], b: string[]): boolean {
   return a.every((k) => setB.has(k));
 }
 
-function buildUrl(pathname: string, columnKeys: string[], page: number): string {
+function buildUrl(
+  pathname: string,
+  columnKeys: string[],
+  page: number,
+  customWidgets: DashboardWidget[],
+  overrides: ChartTypeOverrides
+): string {
   const params = new URLSearchParams();
   if (!sameKeySet(columnKeys, INDUSTRY_DEFAULT_COLUMN_KEYS)) params.set("cols", columnKeys.join(","));
   if (page > 1) params.set("page", String(page));
+  const widgetsValue = encodeWidgetsParam(customWidgets, overrides);
+  if (widgetsValue) params.set("widgets", widgetsValue);
   const qs = params.toString();
   return qs ? `${pathname}?${qs}` : pathname;
 }
@@ -50,6 +66,7 @@ export function IndustryView({ sector }: { sector: IndustrySector }) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const colsParam = searchParams.get("cols");
+  const widgetsParam = searchParams.get("widgets");
   const pageParam = Number(searchParams.get("page") ?? "1");
   const page = Number.isFinite(pageParam) && pageParam >= 1 ? Math.floor(pageParam) : 1;
 
@@ -58,6 +75,7 @@ export function IndustryView({ sector }: { sector: IndustrySector }) {
     [colsParam]
   );
   const columns = useMemo(() => resolvePeerColumns(columnKeys), [columnKeys]);
+  const { customWidgets, overrides } = useMemo(() => parseWidgetsParam(widgetsParam), [widgetsParam]);
 
   // Keyed by sector+page — going back to a page you've already viewed
   // (Prev/Next, or another visitor loading the same popular sector) serves
@@ -81,13 +99,34 @@ export function IndustryView({ sector }: { sector: IndustrySector }) {
     });
     return map;
   }, [dashboardCompanies]);
+  const widgets = useMemo(
+    () => [...buildDefaultWidgets(columns, dashboardCompanies, overrides), ...customWidgets],
+    [columns, dashboardCompanies, overrides, customWidgets]
+  );
 
   function handleColumnChange(keys: string[]) {
-    router.replace(buildUrl(pathname, keys, page), { scroll: false });
+    router.replace(buildUrl(pathname, keys, page, customWidgets, overrides), { scroll: false });
   }
 
   function handlePageChange(nextPage: number) {
-    router.replace(buildUrl(pathname, columnKeys, nextPage), { scroll: false });
+    router.replace(buildUrl(pathname, columnKeys, nextPage, customWidgets, overrides), { scroll: false });
+  }
+
+  function handleAddWidget(widget: DashboardWidget) {
+    router.replace(buildUrl(pathname, columnKeys, page, [...customWidgets, widget], overrides), { scroll: false });
+  }
+
+  function handleRemoveWidget(widgetId: string) {
+    router.replace(
+      buildUrl(pathname, columnKeys, page, customWidgets.filter((w) => w.id !== widgetId), overrides),
+      { scroll: false }
+    );
+  }
+
+  function handleOverrideChange(columnKey: string, type: "bar" | "pie") {
+    router.replace(buildUrl(pathname, columnKeys, page, customWidgets, { ...overrides, [columnKey]: type }), {
+      scroll: false,
+    });
   }
 
   async function handleCopyLink() {
@@ -138,11 +177,14 @@ export function IndustryView({ sector }: { sector: IndustrySector }) {
           <StatementSection
             title="Companies"
             actions={
-              <PeerColumnEditor
-                selectedKeys={columnKeys}
-                onChange={handleColumnChange}
-                resetKeys={INDUSTRY_DEFAULT_COLUMN_KEYS}
-              />
+              <>
+                <PeerColumnEditor
+                  selectedKeys={columnKeys}
+                  onChange={handleColumnChange}
+                  resetKeys={INDUSTRY_DEFAULT_COLUMN_KEYS}
+                />
+                <AddWidgetDialog onAdd={handleAddWidget} />
+              </>
             }
             table={<PeerComparisonTable companies={companies} columns={columns} />}
             dashboard={
@@ -151,7 +193,13 @@ export function IndustryView({ sector }: { sector: IndustrySector }) {
                 <p className="text-xs text-muted-foreground">
                   Charting the top {dashboardCompanies.length} by market cap on this page.
                 </p>
-                <CompareDashboard companies={dashboardCompanies} columns={columns} colorMap={colorMap} />
+                <ComparisonDashboard
+                  companies={dashboardCompanies}
+                  widgets={widgets}
+                  colorMap={colorMap}
+                  onOverrideChange={handleOverrideChange}
+                  onRemoveWidget={handleRemoveWidget}
+                />
               </div>
             }
           />

@@ -9,7 +9,8 @@ import { StatementSection } from "@/components/company/statement-section";
 import { PeerComparisonTable } from "@/components/company/peer-comparison-table";
 import { PeerColumnEditor } from "@/components/company/peer-column-editor";
 import { CompanyColorLegend } from "@/components/compare/company-color-legend";
-import { CompareDashboard } from "@/components/compare/compare-dashboard";
+import { ComparisonDashboard } from "@/components/company/comparison-dashboard";
+import { buildDefaultWidgets } from "@/lib/dashboard-widgets";
 import { resolvePeerColumns } from "@/lib/peer-columns";
 import { CHART_COLORS } from "@/lib/colors";
 import { fetcher, extractErrorMessage } from "@/lib/swr-fetcher";
@@ -61,6 +62,10 @@ export function ScreenResults({
     });
     return map;
   }, [dashboardCompanies]);
+  // Screens' dashboard doesn't yet have its own widget-customization URL
+  // state (unlike Peers/Compare/Industry) — auto-generated bar/pie widgets
+  // only, reproducing the dashboard's previous behavior exactly.
+  const widgets = useMemo(() => buildDefaultWidgets(columns, dashboardCompanies), [columns, dashboardCompanies]);
 
   if (!query) {
     return (
@@ -80,7 +85,7 @@ export function ScreenResults({
           ))}
         </div>
         <p className="mt-4 text-xs text-muted-foreground">
-          Screening ~500 companies — a first run can take a couple of minutes; repeat runs are much faster.
+          Screening the full NSE/BSE universe — a first run can take a couple of minutes; repeat runs are much faster.
         </p>
       </div>
     );
@@ -123,7 +128,7 @@ export function ScreenResults({
           <div className="space-y-4">
             <CompanyColorLegend companies={dashboardCompanies} colorMap={colorMap} />
             <p className="text-xs text-muted-foreground">Charting the top {dashboardCompanies.length} by market cap.</p>
-            <CompareDashboard companies={dashboardCompanies} columns={columns} colorMap={colorMap} />
+            <ComparisonDashboard companies={dashboardCompanies} widgets={widgets} colorMap={colorMap} />
           </div>
         }
       />

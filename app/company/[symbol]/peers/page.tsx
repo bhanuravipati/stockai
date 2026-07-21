@@ -1,17 +1,20 @@
 "use client";
 
-import { use, useEffect, useState } from "react";
+import { use, useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
 import { Skeleton } from "@/components/ui/skeleton";
 import { StatementSection } from "@/components/company/statement-section";
 import { PeerComparisonTable } from "@/components/company/peer-comparison-table";
-import { PeerDashboard } from "@/components/company/peer-dashboard";
+import { ComparisonDashboard } from "@/components/company/comparison-dashboard";
 import { PeerColumnEditor } from "@/components/company/peer-column-editor";
+import { AddWidgetDialog } from "@/components/company/add-widget-dialog";
 import { fetcher, extractErrorMessage } from "@/lib/swr-fetcher";
 import { DEFAULT_PEER_COLUMN_KEYS, resolvePeerColumns } from "@/lib/peer-columns";
+import { buildDefaultWidgets, type ChartTypeOverrides, type DashboardWidget } from "@/lib/dashboard-widgets";
 import type { PeerMetrics } from "@/lib/yfinance";
 
 const COLUMN_STORAGE_KEY = "nebulion:peer-columns";
+const WIDGET_STORAGE_KEY = "nebulion:peer-dashboard-widgets";
 
 function loadStoredColumnKeys(): string[] {
   if (typeof window === "undefined") return DEFAULT_PEER_COLUMN_KEYS;
@@ -22,6 +25,27 @@ function loadStoredColumnKeys(): string[] {
     return Array.isArray(parsed) && parsed.length > 0 ? parsed : DEFAULT_PEER_COLUMN_KEYS;
   } catch {
     return DEFAULT_PEER_COLUMN_KEYS;
+  }
+}
+
+interface StoredWidgetState {
+  customWidgets: DashboardWidget[];
+  overrides: ChartTypeOverrides;
+}
+
+function loadStoredWidgetState(): StoredWidgetState {
+  const empty: StoredWidgetState = { customWidgets: [], overrides: {} };
+  if (typeof window === "undefined") return empty;
+  try {
+    const raw = window.localStorage.getItem(WIDGET_STORAGE_KEY);
+    if (!raw) return empty;
+    const parsed = JSON.parse(raw);
+    return {
+      customWidgets: Array.isArray(parsed?.customWidgets) ? parsed.customWidgets : [],
+      overrides: typeof parsed?.overrides === "object" && parsed.overrides !== null ? parsed.overrides : {},
+    };
+  } catch {
+    return empty;
   }
 }
 
@@ -37,9 +61,11 @@ export default function PeersPage({
 }) {
   const { symbol } = use(params);
   const [columnKeys, setColumnKeys] = useState<string[]>(DEFAULT_PEER_COLUMN_KEYS);
+  const [widgetState, setWidgetState] = useState<StoredWidgetState>({ customWidgets: [], overrides: {} });
 
   useEffect(() => {
     setColumnKeys(loadStoredColumnKeys());
+    setWidgetState(loadStoredWidgetState());
   }, []);
 
   const { data, error, isLoading } = useSWR<PeersResponse>(`/api/companies/${symbol}/peers`, fetcher);
@@ -54,6 +80,33 @@ export default function PeersPage({
       // localStorage unavailable (private browsing, etc) — selection just won't persist.
     }
   }
+
+  function persistWidgetState(next: StoredWidgetState) {
+    setWidgetState(next);
+    try {
+      window.localStorage.setItem(WIDGET_STORAGE_KEY, JSON.stringify(next));
+    } catch {
+      // localStorage unavailable (private browsing, etc) — selection just won't persist.
+    }
+  }
+
+  function handleAddWidget(widget: DashboardWidget) {
+    persistWidgetState({ ...widgetState, customWidgets: [...widgetState.customWidgets, widget] });
+  }
+
+  function handleRemoveWidget(widgetId: string) {
+    persistWidgetState({ ...widgetState, customWidgets: widgetState.customWidgets.filter((w) => w.id !== widgetId) });
+  }
+
+  function handleOverrideChange(columnKey: string, type: "bar" | "pie") {
+    persistWidgetState({ ...widgetState, overrides: { ...widgetState.overrides, [columnKey]: type } });
+  }
+
+  const columns = useMemo(() => resolvePeerColumns(columnKeys), [columnKeys]);
+  const widgets = useMemo(
+    () => [...buildDefaultWidgets(columns, companies, widgetState.overrides), ...widgetState.customWidgets],
+    [columns, companies, widgetState]
+  );
 
   if (isLoading) {
     return (
@@ -81,15 +134,26 @@ export default function PeersPage({
     );
   }
 
-  const columns = resolvePeerColumns(columnKeys);
-
   return (
     <div className="space-y-6">
       <StatementSection
         title={industry ? `Peer Comparison · ${industry}` : "Peer Comparison"}
-        actions={<PeerColumnEditor selectedKeys={columnKeys} onChange={handleColumnChange} />}
+        actions={
+          <>
+            <PeerColumnEditor selectedKeys={columnKeys} onChange={handleColumnChange} />
+            <AddWidgetDialog onAdd={handleAddWidget} />
+          </>
+        }
         table={<PeerComparisonTable companies={companies} columns={columns} />}
-        dashboard={<PeerDashboard companies={companies} columns={columns} industry={industry} />}
+        dashboard={
+          <ComparisonDashboard
+            companies={companies}
+            widgets={widgets}
+            industry={industry}
+            onOverrideChange={handleOverrideChange}
+            onRemoveWidget={handleRemoveWidget}
+          />
+        }
       />
     </div>
   );

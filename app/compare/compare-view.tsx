@@ -11,10 +11,12 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { StatementSection } from "@/components/company/statement-section";
 import { PeerComparisonTable } from "@/components/company/peer-comparison-table";
 import { PeerColumnEditor } from "@/components/company/peer-column-editor";
+import { AddWidgetDialog } from "@/components/company/add-widget-dialog";
 import { CompanyPickerDialog } from "@/components/compare/company-picker-dialog";
 import { CompanyColorLegend } from "@/components/compare/company-color-legend";
-import { CompareDashboard } from "@/components/compare/compare-dashboard";
+import { ComparisonDashboard } from "@/components/company/comparison-dashboard";
 import { COMPARE_DEFAULT_COLUMN_KEYS, resolvePeerColumns } from "@/lib/peer-columns";
+import { buildDefaultWidgets, encodeWidgetsParam, parseWidgetsParam, type DashboardWidget } from "@/lib/dashboard-widgets";
 import { CHART_COLORS } from "@/lib/colors";
 import { fetcher, extractErrorMessage } from "@/lib/swr-fetcher";
 import type { PeerMetrics } from "@/lib/yfinance";
@@ -50,6 +52,7 @@ export function CompareView() {
 
   const symbolsParam = searchParams.get("symbols") ?? "";
   const colsParam = searchParams.get("cols");
+  const widgetsParam = searchParams.get("widgets");
 
   const symbols = useMemo(() => parseSymbolsParam(symbolsParam).slice(0, MAX_COMPANIES), [symbolsParam]);
   const columnKeys = useMemo(
@@ -57,6 +60,7 @@ export function CompareView() {
     [colsParam]
   );
   const columns = useMemo(() => resolvePeerColumns(columnKeys), [columnKeys]);
+  const { customWidgets, overrides } = useMemo(() => parseWidgetsParam(widgetsParam), [widgetsParam]);
 
   const compareKey =
     symbols.length > 0 ? `/api/companies/compare?symbols=${encodeURIComponent(symbols.join(","))}` : null;
@@ -82,12 +86,24 @@ export function CompareView() {
     return map;
   }, [companies]);
 
-  function updateUrl(nextSymbols: string[], nextColumnKeys: string[]) {
+  const widgets = useMemo(
+    () => [...buildDefaultWidgets(columns, companies, overrides), ...customWidgets],
+    [columns, companies, overrides, customWidgets]
+  );
+
+  function updateUrl(
+    nextSymbols: string[],
+    nextColumnKeys: string[],
+    nextCustomWidgets: DashboardWidget[] = customWidgets,
+    nextOverrides: typeof overrides = overrides
+  ) {
     const params = new URLSearchParams();
     if (nextSymbols.length > 0) params.set("symbols", nextSymbols.join(","));
     if (!sameKeySet(nextColumnKeys, COMPARE_DEFAULT_COLUMN_KEYS)) {
       params.set("cols", nextColumnKeys.join(","));
     }
+    const widgetsValue = encodeWidgetsParam(nextCustomWidgets, nextOverrides);
+    if (widgetsValue) params.set("widgets", widgetsValue);
     const qs = params.toString();
     router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
   }
@@ -106,6 +122,22 @@ export function CompareView() {
 
   function handleColumnChange(keys: string[]) {
     updateUrl(symbols, keys);
+  }
+
+  function handleAddWidget(widget: DashboardWidget) {
+    updateUrl(symbols, columnKeys, [...customWidgets, widget]);
+  }
+
+  function handleRemoveWidget(widgetId: string) {
+    updateUrl(
+      symbols,
+      columnKeys,
+      customWidgets.filter((w) => w.id !== widgetId)
+    );
+  }
+
+  function handleOverrideChange(columnKey: string, type: "bar" | "pie") {
+    updateUrl(symbols, columnKeys, customWidgets, { ...overrides, [columnKey]: type });
   }
 
   async function handleCopyLink() {
@@ -190,14 +222,25 @@ export function CompareView() {
           <StatementSection
             title="Comparison"
             actions={
-              <PeerColumnEditor
-                selectedKeys={columnKeys}
-                onChange={handleColumnChange}
-                resetKeys={COMPARE_DEFAULT_COLUMN_KEYS}
-              />
+              <>
+                <PeerColumnEditor
+                  selectedKeys={columnKeys}
+                  onChange={handleColumnChange}
+                  resetKeys={COMPARE_DEFAULT_COLUMN_KEYS}
+                />
+                <AddWidgetDialog onAdd={handleAddWidget} />
+              </>
             }
             table={<PeerComparisonTable companies={companies} columns={columns} />}
-            dashboard={<CompareDashboard companies={companies} columns={columns} colorMap={colorMap} />}
+            dashboard={
+              <ComparisonDashboard
+                companies={companies}
+                widgets={widgets}
+                colorMap={colorMap}
+                onOverrideChange={handleOverrideChange}
+                onRemoveWidget={handleRemoveWidget}
+              />
+            }
           />
         </div>
       )}
